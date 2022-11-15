@@ -1,0 +1,154 @@
+;*****************************************************************************************
+; - ECT_TC0_ISR Interrupt Service Routine (Camshaft sensor notch)
+;   Event = 0
+;*****************************************************************************************
+
+    XDEF ISR_ECT_TC0        ; Required for CW
+        
+ISR_ECT_TC0:
+
+    bset ECT_TFLG1,#$01     ; Clear C0F interrupt flag
+    ldx    #StateLookup     ; Load index register X with the address of "TableLookup"
+    ldab   State            ; Load Accu B with the contents of "State"             
+    aslb                    ; Shift Accu B 1 place to the left                      
+    orab   #$00             ; Bit wise inclusive OR Accu B with 0
+    ldaa   B,X              ; Load Accu A with the contents of "TableLookup", offset in
+                            ; Accu B (9 bit constant offset indexed addressing)    
+    staa   State            ; Copy to "State"
+    rti                     ; Return from interrupt
+    
+;*****************************************************************************************
+
+;*****************************************************************************************
+; - ECT_TC1_ISR Interrupt Service Routine (Crankshaft sensor notch)
+;   Event = 1
+;*****************************************************************************************
+
+     XDEF ISR_ECT_TC1       ; Required for CW
+        
+ISR_ECT_TC1:
+
+    bset ECT_TFLG1,#$02     ; Clear C1F interrupt flag
+    ldx    #StateLookup     ; Load index register X with the address of "TableLookup"
+    ldab   State            ; Load Accu B with the contents of "State"             
+    aslb                    ; Shift Accu B 1 place to the left                      
+    orab   #$01             ; Bit wise inclusive OR Accu B with 1
+    ldaa   B,X              ; Load Accu A with the contents of "TableLookup", offset in
+                            ; Accu B (9 bit constant offset indexed addressing)    
+    staa   State            ; Copy to "State"
+    cmpa    #$46            ; Compare with decimal 70 (Error)
+    beq     State_Error     ; If "State" = $46, branch to State_Error:
+    cmpa    #$67            ; Compare with decimal 103
+    ble     NoLock          ; If "State" =< $67, branch to NoLock:
+    bgt     SynchLock       ; If "State" is > $67, branch to Synchlock: 
+
+State_Error:
+;*****************************************************************************************
+; - If we get here we have experienced an unexpected cam or crank input and have lost lock.
+;   No more spark or injection events until lock has been re-established.
+;*****************************************************************************************
+
+    clr   State                     ; Clear "State"
+    bset  StateStatus,SynchLost     ; Set "SynchLost" bit of "StateStatus" variable (bit1) 
+    bclr  StateStatus,Synch         ; Clear "Synch " bit of "StateStatus" variable (bit0)
+;    bclr  StateStatus,StateNew      ; Clear "StateNew " bit of "StateStatus" variable (bit2)
+    bra   STATE_STATUS_done         ; Branch to STATE_STATUS_done:  
+
+SynchLock:
+;*****************************************************************************************
+; - If we get here we have either just reached one of the four possible lock points, or 
+;    we are already in the synch loop.
+;*****************************************************************************************
+
+    bset  StateStatus,Synch        ; Set "Synch " bit of "StateStatus" variable (bit0)
+;    bset  StateStatus,StateNew     ; Set "StateNew" bit of "StateStatus" variable (bit2)
+    bclr  StateStatus,SynchLost    ; Clear "SynchLost" bit of "StateStatus" variable (bit1) 
+    bra   STATE_STATUS_done        ; Branch to STATE_STATUS_done:
+
+NoLock:
+;*****************************************************************************************
+; - If we get here we have the state machine is still looking for a synch lock.
+;*****************************************************************************************
+
+    bclr  StateStatus,Synch        ; Clear "Synch" bit of "StateStatus" variable (bit0)
+    bset  StateStatus,SynchLost    ; Set "SynchLost" bit of "StateStatus" variable (bit1)
+;    bclr  StateStatus,StateNew     ; Clear "StateNew" bit of "StateStatus" variable (bit 2)    
+ 
+STATE_STATUS_done:
+
+;*****************************************************************************************
+; - "State" event handlers
+;*****************************************************************************************
+
+;*****************************************************************************************
+
+; CT3/T1 - Synchronization point, Tachout on.
+; CT3/T2 - Start timer for ignition #1, waste #6, Tachout off.
+; CT3/T3 - Start timer for ignition #10, waste #5, Tachout on.
+; CT3/T4 - Start injection pulse for #3 & #6, Tachout off.
+; CT4/T5 - Synchronization point, Tachout on.
+; CT4/T6 - Start timer for ignition #9, waste #8, Tachout off.
+; CT4/T7 - Start timer for ignition #4, waste #7, Tachout on.
+; CT4/T8 - Start injection pulse for #5 & #8, Tachout off.
+; CT4/T9 - Tachout on.
+; CT4/T10 - Start timer for ignition #3, waste #2, Tachout off.
+; CT4/T1 - Synchronization point, start timer for ignition #6, waste #1, Tachout on.
+; CT4/T2 - Start injection pulse for #7 & #2, Tachout off.
+; CT4/T3 - Tachout on.
+; CT4/T4 - Start timer for ignition #5, waste #10, Tachout off.
+; CT1/T5 - Synchronization point, start timer for ignition #8, waste #9, Tachout on.
+; CT1/T6 - Start injection pulse for #1 & #10, Tachout off.
+; CT1/T7 - Tachout on.
+; CT1/T8 - Start timer for ignition #7, waste #4, Tachout off.
+; CT1/T9 - Start timer for ignition #2, waste #3, Tachout on.
+; CT1/T10 - Start injection pulse for #9 & #4, Tachout off.
+; Repeat
+
+; Ignition timers start 150 degrees BTDC on compression. Injectors start pulse width 
+; when the intake valve just begins to open on odd cylinders, and 54 degrees before the 
+; intake valve starts to open on even cylinders.
+ 
+;*****************************************************************************************
+
+    ldaa    State           ; Load accu A with value in "State"
+    cmpa    #$7D            ; Compare with decimal 125 (CT3/T1)
+    beq     Notch_CT3_T1a    ; If the Z bit of CCR is set, branch to Notch_CT3_T1:
+    cmpa    #$6F            ; Compare with decimal 111 (CT3/T2)
+    beq     Notch_CT3_T2a    ; If the Z bit of CCR is set, branch to Notch_CT3_T2:
+    cmpa    #$70            ; Compare with decimal 112 (CT3/T3)
+    beq     Notch_CT3_T3a    ; If the Z bit of CCR is set, branch to Notch_CT3_T3:
+    cmpa    #$71            ; Compare with decimal 113 (CT3/T4)
+    beq     Notch_CT3_T4a    ; If the Z bit of CCR is set, branch to Notch_CT3_T4:
+    cmpa    #$7F            ; Compare with decimal 127 (CT4/T5)
+    beq     Notch_CT4_T5a    ; If the Z bit of CCR is set, branch to Notch_CT4_T5:
+    cmpa    #$7B            ; Compare with decimal 123 (CT4/T6)
+    beq     Notch_CT4_T6a    ; If the Z bit of CCR is set, branch to Notch_CT4/T6:
+    cmpa    #$7A            ; Compare with decimal 122 (CT4/T7)
+    beq     Notch_CT4_T7a    ; If the Z bit of CCR is set, branch to Notch_CT4_T7:
+    cmpa    #$79            ; Compare with decimal 121 (CT4/T8)
+    beq     Notch_CT4_T8a    ; If the Z bit of CCR is set, branch to Notch_CT4_T8:
+    cmpa    #$78            ; Compare with decimal 120 (CT4/T9)
+    beq     Notch_CT4_T9a    ; If the Z bit of CCR is set, branch to Notch_CT4_T9:
+    cmpa    #$77            ; Compare with decimal 119 (CT4/T10)
+    beq     Notch_CT4_T10a   ; If the Z bit of CCR is set, branch to Notch_CT4_T10:
+    cmpa    #$7E            ; Compare with decimal 126 (CT4/T1)
+    beq     Notch_CT4_T1a    ; If the Z bit of CCR is set, branch to Notch_CT4_T1:
+    cmpa    #$76            ; Compare with decimal 118 (CT4/T2)
+    beq     Notch_CT4_T2a    ; If the Z bit of CCR is set, branch to Notch_CT4_T2:
+    cmpa    #$75            ; Compare with decimal 117 (CT4/T3)
+    beq     Notch_CT4_T3a    ; If the Z bit of CCR is set, branch to Notch_CT4_T3:
+    cmpa    #$74            ; Compare with decimal 116 (CT4/T4)
+    beq     Notch_CT4_T4a    ; If the Z bit of CCR is set, branch to Notch_CT4_T4:
+    cmpa    #$7C            ; Compare with decimal 124 (CT1/T5)
+    beq     Notch_CT1_T5a    ; If the Z bit of CCR is set, branch to Notch_CT1_T5:
+    cmpa    #$68            ; Compare with decimal 104 (CT1/T6)
+    beq     Notch_CT1_T6a    ; If the Z bit of CCR is set, branch to Notch_CT1_T6:
+    cmpa    #$69            ; Compare with decimal 105 (CT1/T7)
+    beq     Notch_CT1_T7a    ; If the Z bit of CCR is set, branch to Notch_CT1_T7:
+    cmpa    #$6A            ; Compare with decimal 106 (CT1/T8)
+    beq     Notch_CT1_T8a    ; If the Z bit of CCR is set, branch to Notch_CT1_T8:
+    cmpa    #$6B            ; Compare with decimal 107 (CT1/T9)
+    beq     Notch_CT1_T9a    ; If the Z bit of CCR is set, branch to Notch_CT1_T9:
+    cmpa    #$6C            ; Compare with decimal 108 (CT1/T10)
+    beq     Notch_CT1_T10a   ; If the Z bit of CCR is set, branch to Notch_CT1_T10:
+    
